@@ -20,6 +20,18 @@ const Inline = ({ children }) => (
   </code>
 );
 
+const Note = ({ children }) => (
+  <div className="bg-gray-950 border-l-4 border-blue-500 rounded-r-lg px-4 py-3 text-gray-400 text-sm leading-6">
+    {children}
+  </div>
+);
+
+const Warning = ({ children }) => (
+  <div className="bg-gray-950 border-l-4 border-amber-500 rounded-r-lg px-4 py-3 text-gray-400 text-sm leading-6">
+    {children}
+  </div>
+);
+
 const DocsPage = () => {
   return (
     <main className="px-6 py-8 max-w-3xl mx-auto">
@@ -47,6 +59,7 @@ const DocsPage = () => {
             <li>Node.js 18+ — <a href="https://nodejs.org" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300">nodejs.org</a></li>
             <li>PM2 installed globally: <Inline>npm install -g pm2</Inline></li>
             <li>Git installed</li>
+            <li>Nginx installed on the VPS (for HTTPS setup)</li>
             <li>A <a href="https://resend.com" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300">Resend</a> account and API key (free, no domain required — for email alerts)</li>
           </ul>
         </Section>
@@ -69,7 +82,7 @@ MONITORED_APPS=your-app-name
 RESEND_API_KEY=re_xxxxxxxxxxxxxxxx
 ALERT_TO=your-email@gmail.com
 ALERT_FROM=VPSInsight <onboarding@resend.dev>
-ALLOWED_ORIGINS=https://your-dashboard-url.com`}</CodeBlock>
+ALLOWED_ORIGINS=https://your-dashboard-url.vercel.app`}</CodeBlock>
 
           <p>
             <Inline>MONITORED_APPS</Inline> is a comma-separated list of PM2 process names
@@ -89,16 +102,75 @@ pm2 startup`}</CodeBlock>
             auto-start on server reboot.
           </p>
 
-          <p>Open port 4000 if needed:</p>
-          <CodeBlock>{`sudo ufw allow 4000`}</CodeBlock>
-
-          <p>Verify the agent is running:</p>
+          <p>Verify the agent is running locally:</p>
           <CodeBlock>{`curl http://localhost:4000/health
 curl -H "Authorization: Bearer your-token" http://localhost:4000/stats`}</CodeBlock>
         </Section>
 
-        {/* Step 2 */}
-        <Section title="Step 2 — Deploy the Dashboard">
+        {/* Step 2 — HTTPS */}
+        <Section title="Step 2 — Set Up HTTPS on the Agent">
+          <Warning>
+            <strong className="text-amber-400">Important:</strong> If you deploy the dashboard to Vercel (HTTPS), your browser will block requests to an <Inline>http://</Inline> agent due to mixed content restrictions. You must expose the agent over HTTPS.
+          </Warning>
+
+          <p className="mt-3">
+            If you do not have a custom domain, use a free subdomain from{' '}
+            <a href="https://nip.io" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300">nip.io</a>.
+            Your VPS IP <Inline>x.x.x.x</Inline> automatically becomes <Inline>x.x.x.x.nip.io</Inline> — no registration needed.
+          </p>
+
+          <p>Install Nginx and Certbot (run as root):</p>
+          <CodeBlock>{`apt update
+apt install nginx certbot python3-certbot-nginx -y`}</CodeBlock>
+
+          <p>Create an Nginx config — replace <Inline>YOUR_VPS_IP</Inline> with your actual IP:</p>
+          <CodeBlock>{`nano /etc/nginx/sites-available/vpsinsight.conf`}</CodeBlock>
+
+          <p>Paste the following (replacing YOUR_VPS_IP in both server_name lines):</p>
+          <CodeBlock>{`server {
+    listen 80;
+    listen [::]:80;
+    server_name YOUR_VPS_IP.nip.io;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name YOUR_VPS_IP.nip.io;
+
+    ssl_certificate /etc/letsencrypt/live/YOUR_VPS_IP.nip.io/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/YOUR_VPS_IP.nip.io/privkey.pem;
+
+    location / {
+        proxy_pass http://localhost:4000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}`}</CodeBlock>
+
+          <p>Enable the config, open ports, and get a free SSL certificate:</p>
+          <CodeBlock>{`ln -s /etc/nginx/sites-available/vpsinsight.conf /etc/nginx/sites-enabled/vpsinsight.conf
+ufw allow 80
+ufw allow 443
+nginx -t
+systemctl reload nginx
+certbot --nginx -d YOUR_VPS_IP.nip.io`}</CodeBlock>
+
+          <p>Verify HTTPS is working:</p>
+          <CodeBlock>{`curl https://YOUR_VPS_IP.nip.io/health`}</CodeBlock>
+
+          <Note>
+            <strong className="text-blue-400">Note:</strong> After getting SSL, update <Inline>ALLOWED_ORIGINS</Inline> in the agent <Inline>.env</Inline> to your Vercel dashboard URL, then restart: <Inline>pm2 restart vpsinsight-agent --update-env</Inline>
+          </Note>
+        </Section>
+
+        {/* Step 3 */}
+        <Section title="Step 3 — Deploy the Dashboard">
           <p>The dashboard only needs to be deployed once. You can use Vercel (recommended) or self-host it.</p>
 
           <h3 className="text-white font-medium mt-4 mb-2">Option A — Vercel (Recommended, Free)</h3>
@@ -114,29 +186,29 @@ cd vpsinsight-dashboard
 npm install
 npm run build
 pm2 serve dist 3001 --name vpsinsight-dashboard --spa`}</CodeBlock>
-          <p>The dashboard will be accessible at <Inline>http://YOUR_VPS_IP:3001</Inline>.</p>
+          <p>The dashboard will be accessible at <Inline>http://YOUR_VPS_IP:3001</Inline>. No HTTPS issue since both dashboard and agent are on the same server.</p>
         </Section>
 
-        {/* Step 3 */}
-        <Section title="Step 3 — Add Your First Server">
+        {/* Step 4 */}
+        <Section title="Step 4 — Add Your First Server">
           <ol className="list-decimal pl-5 space-y-2">
             <li>Open the dashboard in your browser</li>
             <li>Click <strong className="text-gray-300">+ Add Server</strong></li>
             <li>Fill in:
               <ul className="list-disc pl-5 mt-2 space-y-1">
                 <li><strong className="text-gray-300">Name</strong> — e.g. <Inline>Hostinger VPS</Inline></li>
-                <li><strong className="text-gray-300">URL</strong> — <Inline>http://YOUR_VPS_IP:4000</Inline></li>
+                <li><strong className="text-gray-300">URL</strong> — <Inline>https://YOUR_VPS_IP.nip.io</Inline> (or <Inline>http://YOUR_VPS_IP:4000</Inline> if self-hosting the dashboard)</li>
                 <li><strong className="text-gray-300">Token</strong> — the <Inline>TOKEN</Inline> value from the agent's <Inline>.env</Inline></li>
               </ul>
             </li>
-            <li>Click <strong className="text-gray-300">Add Server</strong> — the dashboard will test the connection before saving</li>
-            <li>Live stats will appear on the server card within seconds</li>
+            <li>Click <strong className="text-gray-300">Add Server</strong> — the dashboard tests the connection before saving</li>
+            <li>Live stats appear on the server card within seconds</li>
           </ol>
-          <p>Repeat for each VPS you want to monitor. Each server needs its own agent running and its own unique token.</p>
+          <p>Repeat for each VPS you want to monitor. Each server needs its own agent and its own unique token.</p>
         </Section>
 
-        {/* Step 4 — Alerts */}
-        <Section title="Step 4 — Alerts & Notifications">
+        {/* Step 5 — Alerts */}
+        <Section title="Step 5 — Alerts & Notifications">
           <p>
             The alert engine runs automatically in the dashboard. No configuration needed —
             it evaluates every poll response against the following default thresholds:
@@ -168,14 +240,13 @@ pm2 serve dist 3001 --name vpsinsight-dashboard --spa`}</CodeBlock>
           <p className="mt-4">
             When a threshold is breached, the Alert Feed on the right side of the dashboard
             updates immediately. If <Inline>RESEND_API_KEY</Inline> and <Inline>ALERT_TO</Inline> are
-            set in the agent's <Inline>.env</Inline>, an email notification is also sent
-            via the agent's <Inline>POST /alert</Inline> endpoint.
+            set in the agent's <Inline>.env</Inline>, an email notification is also sent automatically.
           </p>
         </Section>
 
-        {/* Step 5 */}
-        <Section title="Step 5 — Adding More Servers">
-          <p>To monitor additional VPS servers, repeat Step 1 on each new server — then add them in the dashboard under <strong className="text-gray-300">+ Add Server</strong>.</p>
+        {/* Step 6 */}
+        <Section title="Step 6 — Adding More Servers">
+          <p>To monitor additional VPS servers, repeat Steps 1 and 2 on each new server — then add them in the dashboard under <strong className="text-gray-300">+ Add Server</strong>.</p>
           <p>
             Generate a <strong className="text-gray-300">unique token</strong> for each VPS.
             Never reuse the same token across multiple servers.
@@ -185,7 +256,7 @@ git clone https://github.com/Dubemernest23/vpsinsight-agent.git
 cd vpsinsight-agent
 npm install
 cp .env.example .env
-# Edit .env with a fresh token
+# Edit .env with a fresh token and your settings
 pm2 start index.js --name vpsinsight-agent
 pm2 save`}</CodeBlock>
         </Section>
@@ -196,15 +267,19 @@ pm2 save`}</CodeBlock>
             {[
               {
                 problem: 'Dashboard shows "Unreachable" immediately after adding a server',
-                fix: 'Check that the agent is running (pm2 status), port 4000 is open (ufw allow 4000), and the URL does not have a trailing slash.',
+                fix: 'Check that the agent is running (pm2 status), port 4000 is open (ufw allow 4000), and the URL has no trailing slash.',
               },
               {
                 problem: '"Invalid token" when connecting',
-                fix: 'The TOKEN in Add Server must exactly match the TOKEN value in the agent\'s .env. Tokens are case-sensitive.',
+                fix: "The TOKEN in Add Server must exactly match the TOKEN value in the agent's .env. Tokens are case-sensitive.",
+              },
+              {
+                problem: 'Mixed content error — browser blocks the request',
+                fix: 'Your dashboard is on HTTPS but the agent is on HTTP. Follow Step 2 to set up Nginx + SSL using a free nip.io subdomain.',
               },
               {
                 problem: 'CORS error in the browser console',
-                fix: 'Set ALLOWED_ORIGINS in the agent .env to your dashboard\'s URL e.g. https://your-dashboard.vercel.app. Restart the agent after saving.',
+                fix: 'Set ALLOWED_ORIGINS in the agent .env to your exact dashboard URL e.g. https://your-dashboard.vercel.app — no trailing slash. Restart with: pm2 restart vpsinsight-agent --update-env',
               },
               {
                 problem: 'Alert Feed shows "failed" for email alerts',
